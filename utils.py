@@ -1,7 +1,10 @@
 import os
 import pickle
 from datetime import datetime
+
+import pandas as pd
 from kiteconnect import KiteConnect
+
 
 def get_client(api_key):
     kite = KiteConnect(api_key=api_key)
@@ -19,6 +22,7 @@ def get_client(api_key):
         }
         with open(pickle_path, 'wb') as handle:
             pickle.dump(token_data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        set_instrument_df()
 
         return token_data
 
@@ -35,4 +39,10 @@ def get_client(api_key):
         token_data = update_pickle()
 
     kite.set_access_token(token_data['access_token'])
+    print('KITE API CONNECTED')
     return kite
+
+
+def set_instrument_df(kite):
+    instrument_df = pd.DataFrame(kite.instruments())
+    instrument_df.to_csv(os.path.join('kite_master.csv'))
