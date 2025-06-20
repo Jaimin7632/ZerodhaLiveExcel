@@ -1,0 +1,12 @@
+' >>> This code goes into the 'ThisWorkbook' object (double-click ThisWorkbook under Microsoft Excel Objects) <<<
+
+Private Sub Workbook_Open()
+    ' Small delay to ensure Excel is fully loaded before trying to refresh
+    Call StartLivePriceRefresh
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    Call StopLivePriceRefresh
+    ' Give a tiny moment for the OnTime to cancel to avoid errors on close
+    Application.Wait(Now + TimeValue("00:00:01"))
+End Sub

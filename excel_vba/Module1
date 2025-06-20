@@ -1,0 +1,91 @@
+' >>> This code goes into a standard Module (e.g., Module1) <<<
+
+' Global variable to store the time for the next scheduled refresh
+Private NextRefreshTime As Date
+
+' --- IMPORTANT: VERIFY THIS QUERY NAME ---
+' Go to Excel: Data tab -> Queries & Connections pane.
+' Use the exact name you noted when setting up the web query.
+' It's often "Query1" by default after initial import, or "Query - live_prices" if renamed.
+Const LIVE_DATA_QUERY_NAME As String = "Query1" ' <--- UPDATE THIS IF YOUR QUERY NAME IS DIFFERENT!
+
+' --- Refresh Interval ---
+' Set to 1 for approximately 1-second updates.
+' Actual refresh rate might be slightly slower due to network/Excel processing.
+Const REFRESH_INTERVAL_SECONDS As Long = 1 ' <--- Adjust your desired interval here (in seconds)
+
+' --- Macro to Start Auto-Refresh ---
+Sub StartLivePriceRefresh()
+    On Error GoTo ErrorHandler
+
+    ' Clear any pending previous schedules to prevent multiple instances
+    Call StopLivePriceRefresh
+
+    ' Immediately refresh data when starting
+    Call RefreshAndScheduleNext
+    Debug.Print "Live data refresh initiated. First refresh done."
+    Exit Sub
+
+ErrorHandler:
+    Debug.Print "Error in StartLivePriceRefresh: " & Err.Description
+End Sub ' <--- Ensure this End Sub is here and matches the above Sub
+
+' --- Macro to Perform Data Refresh and Reschedule ---
+Sub RefreshAndScheduleNext()
+    On Error GoTo ErrorHandler
+
+    ' Check if the workbook is still open to prevent errors during close
+    If ThisWorkbook Is Nothing Then Exit Sub
+
+    ' --- Perform the refresh ---
+    Dim connExists As Boolean
+    connExists = False
+    For Each conn In ThisWorkbook.Connections
+        If conn.Name = LIVE_DATA_QUERY_NAME Then
+            connExists = True
+            conn.Refresh ' Refresh the specific data connection
+            Exit For
+        End If
+    Next conn
+
+    If Not connExists Then
+        Debug.Print "Error: Query '" & LIVE_DATA_QUERY_NAME & "' not found. Cannot refresh."
+        GoTo EndSub ' Do NOT reschedule if query isn't found
+    End If
+
+    ' Debugging: Confirm refresh happened (visible in VBA Immediate Window)
+    Debug.Print "Refreshed query '" & LIVE_DATA_QUERY_NAME & "' at: " & Format(Now, "hh:mm:ss")
+
+    ' --- Schedule the next refresh ---
+    ' Calculate next schedule time based on current time + interval
+    NextRefreshTime = Now + TimeSerial(0, 0, REFRESH_INTERVAL_SECONDS)
+    Application.OnTime NextRefreshTime, "RefreshAndScheduleNext", , True ' True to schedule
+
+    Exit Sub ' Exit the Sub if no error
+
+ErrorHandler:
+    Debug.Print "An error occurred in RefreshAndScheduleNext: " & Err.Description
+    ' Even on error, try to reschedule to keep the updates going
+    Resume Next ' Continues execution after the error (will reschedule)
+End Sub ' <--- Ensure this End Sub is here and matches the above Sub
+
+' --- Macro to Stop Auto-Refresh ---
+Sub StopLivePriceRefresh()
+    On Error Resume Next ' Ignore errors if no task is scheduled
+    Application.OnTime NextRefreshTime, "RefreshAndScheduleNext", , False ' False cancels the scheduled task
+    On Error GoTo 0
+    Debug.Print "Live data auto-refresh stopped."
+End Sub ' <--- Ensure this End Sub is here and matches the above Sub
+
+Sub ListAllConnections()
+    Dim conn As Object ' Using Object as a generic type for connection
+    Debug.Print "--- Listing Workbook Connections ---"
+    If ThisWorkbook.Connections.Count = 0 Then
+        Debug.Print "No connections found in this workbook."
+    Else
+        For Each conn In ThisWorkbook.Connections
+            Debug.Print "Connection Name (VBA): " & conn.Name & " | Display Name: " & conn.DisplayName
+        Next conn
+    End If
+    Debug.Print "----------------------------------"
+End Sub
