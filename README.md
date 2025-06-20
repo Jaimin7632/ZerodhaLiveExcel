@@ -55,11 +55,7 @@ This Excel file tells your Python script which instruments to fetch data for.
 
 2.  Open `instruments_to_track.xlsx`.
 
-3.  Go to the sheet named `Symbols` (this is configured in `config.py`).
-
-4.  **In Row 1, ensure you have these exact headers:** `Exchange` (in cell A1) and `Instrument_Name` (in cell B1).
-
-5.  Starting from **Row 2**, list the instruments you want to track:
+3.  Starting from **Row 2**, list the instruments you want to track:
 
       * **For simple Equity/Futures/Options symbols:**
     
