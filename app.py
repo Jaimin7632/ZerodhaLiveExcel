@@ -1,78 +1,186 @@
-# live_tick_excel_app/app.py
-import asyncio
-import io
-import json
+import time
+import threading
+import os
+import xlwings as xw
+from kiteconnect import KiteTicker
 
-import pandas as pd
-from flask import Flask, Response
+import config
+import utils
 
-from excel_handler import read_instrument_list_from_excel
-import kite_data_manager  # Import the data manager module
-from config import FLASK_HOST, FLASK_PORT
+# =========================================================
+# FIX WORKING DIRECTORY (IMPORTANT FOR XLWINGS)
+# =========================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(BASE_DIR)
 
-app = Flask(__name__)
+# =========================================================
+# GLOBAL STORES
+# =========================================================
+LIVE_DATA = {}              # { SYMBOL: { field: value } }
+TOKEN_TO_SYMBOL = {}        # { token: symbol }
+SYMBOL_TO_TOKEN = {}        # { symbol: token }
+SUBSCRIBED_TOKENS = set()
+
+kws = None
+kite = None
+lock = threading.Lock()
+
+STARTED = False   # <-- IMPORTANT GUARD
 
 
-# --- Flask Route to serve CSV data for Excel ---
-@app.route('/live_prices.csv')
-def get_live_prices_csv_for_excel():
+# =========================================================
+# KITE CALLBACKS
+# =========================================================
+def on_ticks(ws, ticks):
+    for tick in ticks:
+        token = tick.get("instrument_token")
+        symbol = TOKEN_TO_SYMBOL.get(token)
+
+        if not symbol:
+            continue
+
+        LIVE_DATA[symbol] = {
+            "last_price": tick.get("last_price"),
+            "volume": tick.get("volume_traded"),
+            "oi": tick.get("oi"),
+
+            "open": tick.get("ohlc", {}).get("open"),
+            "high": tick.get("ohlc", {}).get("high"),
+            "low": tick.get("ohlc", {}).get("low"),
+            "close": tick.get("ohlc", {}).get("close"),
+
+            "bid_price": tick.get("depth", {}).get("buy", [{}])[0].get("price"),
+            "bid_qty": tick.get("depth", {}).get("buy", [{}])[0].get("quantity"),
+            "ask_price": tick.get("depth", {}).get("sell", [{}])[0].get("price"),
+            "ask_qty": tick.get("depth", {}).get("sell", [{}])[0].get("quantity"),
+
+            "exchange_timestamp": tick.get("exchange_timestamp"),
+            "last_trade_time": tick.get("last_trade_time"),
+        }
+
+
+def on_connect(ws, response):
+    print("[Kite] WebSocket connected")
+
+
+# =========================================================
+# DYNAMIC SUBSCRIBE LOGIC
+# =========================================================
+def subscribe_symbol(symbol):
+    global kws
+
+    if kws is None:
+        return
+
+    symbol = symbol.upper()
+
+    with lock:
+        token = SYMBOL_TO_TOKEN.get(symbol)
+
+        if not token or token in SUBSCRIBED_TOKENS:
+            return
+
+        SUBSCRIBED_TOKENS.add(token)
+        TOKEN_TO_SYMBOL[token] = symbol
+        LIVE_DATA[symbol] = {}
+
+        kws.subscribe([token])
+        kws.set_mode(kws.MODE_FULL, [token])
+
+        print(f"[SUBSCRIBE] {symbol} ({token})")
+
+
+# =========================================================
+# EXCEL FUNCTIONS
+# =========================================================
+@xw.func
+def hello():
+    return "hello"
+
+
+@xw.func(rtd=True, volatile=False)
+def kite_rtd(symbol, field):
     """
-    Serves the latest tick data for all subscribed instruments as a CSV file.
-    Excel will read from this URL.
+    Excel:
+    =kite_rtd("RELIANCE","last_price")
+    =kite_rtd(A2,"bid_price")
     """
-    # Get the processed data from the kite_data_manager
-    rows = kite_data_manager.get_live_prices_for_csv()
+    if not symbol or not field:
+        return ""
 
-    # Create an in-memory CSV string
-    if len(rows) > 1:  # If there are actual data rows beyond just headers
-        df = pd.DataFrame(rows[1:], columns=rows[0])
-    else:  # Only headers if no data yet
-        df = pd.DataFrame(columns=rows[0])
+    symbol = str(symbol).strip().upper()
+    field = str(field).strip().lower()
 
-    buffer = io.StringIO()
-    df.to_csv(buffer, index=False)
-    csv_data = buffer.getvalue()
+    if symbol not in SYMBOL_TO_TOKEN:
+        return "INVALID SYMBOL"
 
-    response = Response(csv_data, mimetype="text/csv")
-    response.headers["Content-Disposition"] = "attachment; filename=live_prices.csv"
-    # print(f"[Flask] Served live_prices.csv. Contains {len(rows) - 1} data rows.")
-    return response
+    if symbol not in LIVE_DATA:
+        subscribe_symbol(symbol)
+
+    return LIVE_DATA.get(symbol, {}).get(field, "")
 
 
-# --- Application Startup Logic ---
-async def startup_sequence():
-    """Performs initial setup (Excel read, Kite init, Ticker start) asynchronously."""
-    print("[App] Initiating startup sequence...")
+# =========================================================
+# START KITE WEBSOCKET
+# =========================================================
+def start_kite_ws():
+    global kws, kite
 
-    # 1. Read instruments from Excel
-    instruments_from_excel = read_instrument_list_from_excel()
-    if not instruments_from_excel:
-        print("[App] No instruments loaded from Excel. Please check the file and restart.")
-        return False  # Indicate failure, main script will exit
+    if kite is None:
+        print("[ERROR] Kite not initialized")
+        return
 
-    # 2. Initialize KiteConnect and map instruments to tokens
-    success = await kite_data_manager.initialize_kite_and_instruments(instruments_from_excel)
-    if not success:
-        print("[App] Failed to initialize KiteConnect or map instruments. Exiting.")
-        return False
+    kws = KiteTicker(config.API_KEY, kite.access_token)
+    kws.on_ticks = on_ticks
+    kws.on_connect = on_connect
 
-    # 3. Start the KiteTicker WebSocket thread
-    if not kite_data_manager.start_kite_ticker_thread():
-        print("[App] Failed to start KiteTicker WebSocket. Exiting.")
-        return False
-
-    print("[App] Startup sequence completed successfully.")
-    return True
+    kws.connect(threaded=True)
 
 
-if __name__ == '__main__':
-    print("--- Starting Live Tick Data for Excel Application ---")
+# =========================================================
+# INIT KITE + LOAD INSTRUMENT MASTER
+# =========================================================
+def init():
+    global kite, SYMBOL_TO_TOKEN
 
-    # Run the asynchronous startup sequence
-    if asyncio.run(startup_sequence()):
-        print(f"[App] Flask server will start on http://{FLASK_HOST}:{FLASK_PORT}/")
-        print(f"[App] Excel should connect to http://{FLASK_HOST}:{FLASK_PORT}/live_prices.csv")
-        # Start Flask web server (synchronous)
-        app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False)
-    else:
-        print("[App] Application startup failed. Exiting.")
+    print("[INIT] Initializing Kite client")
+    kite = utils.get_client(api_key=config.API_KEY)
+
+    print("[INIT] Loading instrument master...")
+    instruments = kite.instruments()
+
+    SYMBOL_TO_TOKEN = {
+        i["tradingsymbol"].upper(): i["instrument_token"]
+        for i in instruments
+    }
+
+    print(f"[INIT] Loaded {len(SYMBOL_TO_TOKEN)} instruments")
+
+
+# =========================================================
+# BOOTSTRAP (RUNS ON XLWINGS IMPORT)
+# =========================================================
+def bootstrap():
+    global STARTED
+
+    if STARTED:
+        return
+
+    STARTED = True
+    print("[BOOTSTRAP] Starting Kite RTD")
+
+    init()
+    threading.Thread(target=start_kite_ws, daemon=True).start()
+
+
+# IMPORTANT: this runs when Excel imports the file
+bootstrap()
+
+
+# =========================================================
+# TERMINAL MODE (OPTIONAL)
+# =========================================================
+if __name__ == "__main__":
+    print("=== ZERODHA EXCEL RTD (TERMINAL MODE) ===")
+    while True:
+        time.sleep(1)

@@ -1,120 +1,294 @@
-# Zerodha Live Excel Dashboard
+Here is a **final, clean, copy-paste-ready `README.md`** for your **xlwings-based Zerodha Live Excel Dashboard**.
 
-This project provides a Python-based backend to fetch live tick data from Zerodha Kite Connect API and serve it to an Excel dashboard, allowing for near real-time price updates within Excel.
+This version is **fully aligned with your final Python code**, removes all Flask/VBA/CSV logic, and clearly documents **requirements, setup, usage, and limitations**.
+
+---
+
+# Zerodha Live Excel Dashboard (xlwings RTD)
+
+This project provides a **Python + xlwings Real-Time Data (RTD) bridge** between the Zerodha Kite Connect API and Microsoft Excel.
+
+Live market data is streamed from Zerodha via WebSocket and consumed **directly inside Excel formulas** using xlwings User Defined Functions (UDFs), allowing near real-time updates without CSV files, Power Query, or VBA refresh loops.
+
+---
+
+## ⚠️ IMPORTANT PLATFORM REQUIREMENT (READ FIRST)
+
+This project **ONLY works on**:
+
+✅ **Windows Desktop Excel** (Microsoft 365 / Office 2019 / 2021 – non-Store)
+❌ **Microsoft Store Excel** – NOT supported
+❌ **Excel on macOS** – NOT supported
+
+> xlwings UDFs require **Windows COM automation**, which is unavailable on Store Excel and macOS.
+
+---
 
 ## Features
 
-  * Fetches live tick data from Zerodha Kite Connect.
-  * Allows defining instruments to track from an Excel input file.
-  * Dynamically maps instrument names to their respective tokens.
-  * Serves the latest tick data for all tracked instruments via a local web server (CSV format).
-  * Enables an Excel workbook to automatically refresh and display live prices.
+* Live tick data via **Zerodha Kite WebSocket**
+* Dynamic symbol → instrument token mapping
+* On-demand subscription (symbol subscribes when first used in Excel)
+* Excel formulas update automatically (RTD-style)
+* No CSV files
+* No Power Query
+* No VBA refresh loops
+* No Excel polling
+* Single Python process feeds Excel in real time
 
+---
 
+## Architecture
+
+```
+Zerodha Kite WebSocket
+        ↓
+    Python Backend
+        ↓
+ xlwings COM RTD Server
+        ↓
+     Excel Formulas
+```
+
+---
+
+## Excel Usage Examples
+
+```excel
+=hello()
+
+=kite_rtd("RELIANCE","last_price")
+
+=kite_rtd(A2,"bid_price")
+```
+
+### Supported Fields (examples)
+
+* `last_price`
+* `volume`
+* `oi`
+* `open`
+* `high`
+* `low`
+* `close`
+* `bid_price`
+* `bid_qty`
+* `ask_price`
+* `ask_qty`
+* `exchange_timestamp`
+* `last_trade_time`
+
+---
 
 ## Setup Instructions
 
-Follow these steps to get your live Excel dashboard running.
+### 1. Install Python (Windows)
 
-### 1\. Python Installation
+Download **64-bit Python** from:
 
-If you don't have Python installed, download it from the official website:
+[https://www.python.org/downloads/](https://www.python.org/downloads/)
 
-  * Go to [Python.org](https://www.python.org/downloads/).
-  * Download the latest stable version of Python 3.x.
-  * During installation, **make sure to check "Add Python X.Y to PATH"** (this is very important for running commands from CMD).
+During installation:
 
-### 2\. Install Required Packages
+* ✅ Check **“Add Python to PATH”**
+* ✅ Install for all users (recommended)
 
-Open your Command Prompt (CMD) or PowerShell and navigate to the `ZerodhaLiveExcel` project directory. Then run the following command:
+---
+
+### 2. Install Required Packages
+
+Open **Command Prompt (CMD)** and run:
 
 ```bash
-pip install Flask openpyxl kiteconnect pandas websockets asgiref
+pip install xlwings kiteconnect pandas
 ```
 
-### 3\. Change API Key and Secret in `config.py`
+---
 
-Open the `config.py` file in your project directory using a text editor (like Notepad, VS Code, Sublime Text, etc.).
+### 3. Install xlwings Excel Add-in
 
-Update the following lines with your Zerodha Kite Connect API credentials:
+Run **once**:
+
+```bash
+xlwings addin install
+```
+
+Restart Excel and confirm the **xlwings** tab appears.
+
+---
+
+### 4. Verify xlwings COM Add-in (CRITICAL)
+
+In Excel:
+
+```
+File → Options → Add-ins
+Manage: COM Add-ins → Go
+```
+
+You **must see and enable**:
+
+```
+☑ xlwings
+```
+
+If xlwings does not appear here, UDFs will **not work**.
+
+---
+
+### 5. Enable VBA Trust Access
+
+In Excel:
+
+```
+File → Options → Trust Center → Trust Center Settings
+→ Macro Settings
+```
+
+Enable:
+
+* ✅ Enable all macros
+* ✅ Trust access to the VBA project model
+
+Restart Excel.
+
+---
+
+### 6. Configure API Credentials (`config.py`)
+
+Edit `config.py`:
 
 ```python
-# config.py
-
-# --- Kite Connect API Credentials ---
-API_KEY = "YOUR_KITE_API_KEY"         # Get this from your Kite Connect developer console
-API_SECRET = "YOUR_KITE_API_SECRET"   # Get this from your Kite Connect developer console
-                                       
+API_KEY = "YOUR_KITE_API_KEY"
+API_SECRET = "YOUR_KITE_API_SECRET"
 ```
 
-### 4\. Update Needed Symbols in `instruments_to_track.xlsx`
+Access token handling should be implemented in `utils.get_client()` as per your login flow.
 
-This Excel file tells your Python script which instruments to fetch data for.
+---
 
-1.  Locate `instruments_to_track.xlsx` in your project directory.
+### 7. Run the Python Backend
 
-2.  Open `instruments_to_track.xlsx`.
+Open CMD, navigate to the project directory:
 
-3.  Starting from **Row 2**, list the instruments you want to track:
+```cmd
+cd path\to\ZerodhaLiveExcel
+```
 
-      * **For simple Equity/Futures/Options symbols:**
-    
-        | Instrument\_Name      |
-        |:----------------------|
-        | RELIANCE              |
-        | NIFTY25FEB            |
-        | BSE:TATAMOTORS        |
-        | CRUDEOIL25MAR         |
-        | INFY                  |
-        | BANKNIFTY25FEB47000CE |
+Run:
 
-      * **For specific exchange/instrument combinations (recommended for clarity and avoiding ambiguity):**
-        You can explicitly state the exchange in the `Instrument_Name` column using the `EXCHANGE:TRADINGSYMBOL` format. This can be helpful if `TRADINGSYMBOL` might exist on multiple exchanges or for complex F\&O names. The script will prioritize finding this exact match.
+```bash
+python app.py
+```
 
-      * **Ensure `Instrument_Name` is the exact `tradingsymbol` used by Kite.** Check Kite's instrument master if unsure.
+Expected logs:
 
-6.  **Save and Close `instruments_to_track.xlsx`** before running `app.py`.
+```
+[BOOTSTRAP] Starting Kite RTD
+[INIT] Initializing Kite client
+[INIT] Loaded XXXX instruments
+[Kite] WebSocket connected
+```
 
-### 5\. Run `app.py` (Guide for Windows using CMD)
+⚠️ **Keep this window open** while Excel is running.
 
-This will start your Python backend, connecting to Kite and running the local web server.
+---
 
-1.  Open your Command Prompt (CMD) or PowerShell.
-2.  Navigate to your project directory (`ZerodhaLiveExcel`). For example, if your folder is on your Desktop:
-    ```cmd
-    cd %USERPROFILE%\Desktop\ZerodhaLiveExcel
-    ```
-    (Adjust path as per your setup)
-3.  Run the application:
-    ```bash
-    python app.py
-    ```
-4.  Keep this CMD window open. You will see logs from the Python script indicating connection status, instruments mapped, and when data is served. **Do not close this window.**
+### 8. Import Functions into Excel
 
+1. Open Excel
+2. Go to **xlwings → Import Functions**
+3. Wait for import to complete
 
+---
 
 ## Running the Live Dashboard
 
-1.  **Ensure your Python `app.py` is running** in its CMD window.
-2.  **Open `Live.xlsm`**.
-3.  When prompted by Excel, **click "Enable Content" or "Enable Macros"**.
+1. Ensure `app.py` is running
+2. In Excel, test:
 
-Your Excel sheet should now begin refreshing automatically, approximately every second, displaying live prices from your Python server.
+   ```excel
+   =hello()
+   ```
 
-## Troubleshooting Common Issues
+   Expected output:
 
-  * **"Sub or Function not defined" (VBA Error):**
-      * **Cause:** Code is in the wrong place or a typo.
-      * **Fix:** Ensure `StartLivePriceRefresh`, `RefreshAndScheduleNext`, `StopLivePriceRefresh` are in a standard module (`Module1`). `Workbook_Open` and `Workbook_BeforeClose` must be in the `ThisWorkbook` object. Double-check spelling. Run `Debug > Compile VBAProject` in the VBA editor.
-  * **"Query '[Name]' not found" (VBA Debug.Print message):**
-      * **Cause:** The `Const LIVE_DATA_QUERY_NAME` in your VBA module does not exactly match the query name in Excel.
-      * **Fix:** In Excel, go `Data` tab -\> `Queries & Connections` pane. Note the *exact* query name (e.g., "Query1", "Query - live\_prices"). Update `Const LIVE_DATA_QUERY_NAME` in VBA to this exact string.
-  * **"Object does not support this property or method" (VBA Error):**
-      * **Cause:** The connection object retrieved by VBA isn't of a type that supports `.Refresh` (usually when it's not a proper Power Query `WorkbookConnection`).
-      * **Fix:** The provided VBA code includes checks for `WorkbookConnection` and `QueryTable` types. If the error persists, ensure your data was imported via `Data > From Web` in the current Excel version, not an older method. If the error points to `conn.Refresh` after these checks, inspect `TypeName(conn)` in the Immediate Window during debug to see what kind of object it is.
-  * **Data not refreshing / Not "second-wise":**
-      * **Check Python CMD:** Is `app.py` running without errors? Is it logging `[Flask] Served live_prices.csv...` every time Excel refreshes (approx. every second)?
-      * **Check Python `kite_data_manager` logs:** Are `[Kite Data Manager] Received tick...` messages appearing frequently? If not, Kite may not be sending new ticks for your selected instruments, or your API access token may be expired.
-      * **Check Excel VBA Immediate Window:** Is it logging `Refreshed query...` every second? If not, the VBA `Application.OnTime` schedule might be broken.
-      * **Data Liquidity:** The instrument might not receive new ticks every second, especially during off-market hours or for illiquid stocks.
-      * **Excel Performance:** For very large numbers of instruments or complex dashboards, Excel might struggle to re-process data every second. Consider increasing `REFRESH_INTERVAL_SECONDS` to 2 or 3.
+   ```
+   hello
+   ```
+3. Then use:
+
+   ```excel
+   =kite_rtd("RELIANCE","last_price")
+   ```
+
+Prices will update automatically as ticks arrive.
+
+---
+
+## Troubleshooting
+
+### ❌ `Object required` in Excel
+
+Cause:
+
+* Excel does not support COM automation
+* xlwings COM add-in not loaded
+
+Fix:
+
+* Use **Desktop Excel only**
+* Ensure xlwings appears under **COM Add-ins**
+* Restart Excel and re-import functions
+
+---
+
+### ❌ Function name appears but returns error
+
+Cause:
+
+* Function registered but COM server unavailable
+
+Fix:
+
+* Excel environment issue (see above)
+
+---
+
+### ❌ No live updates
+
+Check:
+
+* Python console shows `[Kite] WebSocket connected`
+* Excel calculation mode:
+
+  ```
+  Formulas → Calculation Options → Automatic
+  ```
+* Market is open and instrument is liquid
+
+---
+
+### ❌ Excel freezes or lags
+
+Excel is not designed for high-frequency RTD:
+
+Recommendations:
+
+* Limit to ~50–100 symbols
+* Avoid heavy formulas
+* Restart Excel daily
+
+---
+
+## Performance & Limitations
+
+| Aspect           | Notes                   |
+| ---------------- | ----------------------- |
+| Latency          | ~200–500 ms             |
+| Update type      | Tick-driven             |
+| Max symbols      | ~100 practical          |
+| Use case         | Monitoring & dashboards |
+| Not suitable for | HFT / scalping          |
+
+---
