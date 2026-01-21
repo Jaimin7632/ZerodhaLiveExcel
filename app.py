@@ -1,14 +1,16 @@
 import time
 import threading
 import os
-import xlwings as xw
+
+import pandas as pd
+from flask import Flask, jsonify
 from kiteconnect import KiteTicker
 
 import config
 import utils
 
 # =========================================================
-# FIX WORKING DIRECTORY (IMPORTANT FOR XLWINGS)
+# WORKING DIRECTORY
 # =========================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
@@ -17,170 +19,125 @@ os.chdir(BASE_DIR)
 # GLOBAL STORES
 # =========================================================
 LIVE_DATA = {}              # { SYMBOL: { field: value } }
-TOKEN_TO_SYMBOL = {}        # { token: symbol }
-SYMBOL_TO_TOKEN = {}        # { symbol: token }
+TOKEN_TO_SYMBOL = {}
+SYMBOL_TO_TOKEN = {}
 SUBSCRIBED_TOKENS = set()
 
 kws = None
 kite = None
 lock = threading.Lock()
 
-STARTED = False   # <-- IMPORTANT GUARD
-
-
 # =========================================================
 # KITE CALLBACKS
 # =========================================================
 def on_ticks(ws, ticks):
-    for tick in ticks:
-        token = tick.get("instrument_token")
-        symbol = TOKEN_TO_SYMBOL.get(token)
+    with lock:
+        for tick in ticks:
+            token = tick.get("instrument_token")
+            symbol = TOKEN_TO_SYMBOL.get(token)
+            if not symbol:
+                continue
 
-        if not symbol:
-            continue
-
-        LIVE_DATA[symbol] = {
-            "last_price": tick.get("last_price"),
-            "volume": tick.get("volume_traded"),
-            "oi": tick.get("oi"),
-
-            "open": tick.get("ohlc", {}).get("open"),
-            "high": tick.get("ohlc", {}).get("high"),
-            "low": tick.get("ohlc", {}).get("low"),
-            "close": tick.get("ohlc", {}).get("close"),
-
-            "bid_price": tick.get("depth", {}).get("buy", [{}])[0].get("price"),
-            "bid_qty": tick.get("depth", {}).get("buy", [{}])[0].get("quantity"),
-            "ask_price": tick.get("depth", {}).get("sell", [{}])[0].get("price"),
-            "ask_qty": tick.get("depth", {}).get("sell", [{}])[0].get("quantity"),
-
-            "exchange_timestamp": tick.get("exchange_timestamp"),
-            "last_trade_time": tick.get("last_trade_time"),
-        }
+            LIVE_DATA[symbol] = {
+                "last_price": tick.get("last_price"),
+                "volume": tick.get("volume_traded"),
+                "oi": tick.get("oi"),
+                "open": tick.get("ohlc", {}).get("open"),
+                "high": tick.get("ohlc", {}).get("high"),
+                "low": tick.get("ohlc", {}).get("low"),
+                "close": tick.get("ohlc", {}).get("close"),
+                "bid_price": tick.get("depth", {}).get("buy", [{}])[0].get("price"),
+                "ask_price": tick.get("depth", {}).get("sell", [{}])[0].get("price"),
+            }
 
 
 def on_connect(ws, response):
-    print("[Kite] WebSocket connected")
+    print("[KITE] WebSocket connected")
 
 
 # =========================================================
-# DYNAMIC SUBSCRIBE LOGIC
+# SUBSCRIBE SYMBOL
 # =========================================================
 def subscribe_symbol(symbol):
-    global kws
-
-    if kws is None:
-        return
-
     symbol = symbol.upper()
 
     with lock:
         token = SYMBOL_TO_TOKEN.get(symbol)
-
         if not token or token in SUBSCRIBED_TOKENS:
             return
 
         SUBSCRIBED_TOKENS.add(token)
         TOKEN_TO_SYMBOL[token] = symbol
-        LIVE_DATA[symbol] = {}
-
         kws.subscribe([token])
         kws.set_mode(kws.MODE_FULL, [token])
 
-        print(f"[SUBSCRIBE] {symbol} ({token})")
+        print(f"[SUBSCRIBE] {symbol}")
 
 
 # =========================================================
-# EXCEL FUNCTIONS
-# =========================================================
-@xw.func
-def hello():
-    return "hello"
-
-
-@xw.func(rtd=True, volatile=False)
-def kite_rtd(symbol, field):
-    """
-    Excel:
-    =kite_rtd("RELIANCE","last_price")
-    =kite_rtd(A2,"bid_price")
-    """
-    if not symbol or not field:
-        return ""
-
-    symbol = str(symbol).strip().upper()
-    field = str(field).strip().lower()
-
-    if symbol not in SYMBOL_TO_TOKEN:
-        return "INVALID SYMBOL"
-
-    if symbol not in LIVE_DATA:
-        subscribe_symbol(symbol)
-
-    return LIVE_DATA.get(symbol, {}).get(field, "")
-
-
-# =========================================================
-# START KITE WEBSOCKET
+# START KITE WS
 # =========================================================
 def start_kite_ws():
-    global kws, kite
-
-    if kite is None:
-        print("[ERROR] Kite not initialized")
-        return
-
+    global kws
     kws = KiteTicker(config.API_KEY, kite.access_token)
     kws.on_ticks = on_ticks
     kws.on_connect = on_connect
-
     kws.connect(threaded=True)
 
 
 # =========================================================
-# INIT KITE + LOAD INSTRUMENT MASTER
+# INIT
 # =========================================================
 def init():
     global kite, SYMBOL_TO_TOKEN
-
-    print("[INIT] Initializing Kite client")
     kite = utils.get_client(api_key=config.API_KEY)
 
-    print("[INIT] Loading instrument master...")
+    print("[INIT] Loading instruments...")
     instruments = kite.instruments()
+    instrument_df = pd.DataFrame(instruments)
+    instrument_df.to_csv(os.path.join('instuments.csv'))
 
     SYMBOL_TO_TOKEN = {
         i["tradingsymbol"].upper(): i["instrument_token"]
         for i in instruments
     }
-
-    print(f"[INIT] Loaded {len(SYMBOL_TO_TOKEN)} instruments")
-
-
-# =========================================================
-# BOOTSTRAP (RUNS ON XLWINGS IMPORT)
-# =========================================================
-def bootstrap():
-    global STARTED
-
-    if STARTED:
-        return
-
-    STARTED = True
-    print("[BOOTSTRAP] Starting Kite RTD")
-
-    init()
-    threading.Thread(target=start_kite_ws, daemon=True).start()
-
-
-# IMPORTANT: this runs when Excel imports the file
-bootstrap()
+    print(f"[INIT] {len(SYMBOL_TO_TOKEN)} instruments loaded")
 
 
 # =========================================================
-# TERMINAL MODE (OPTIONAL)
+# HTTP SERVER (SNAPSHOT)
+# =========================================================
+app = Flask(__name__)
+
+@app.route("/snapshot")
+def snapshot():
+    with lock:
+        return jsonify(LIVE_DATA)
+
+@app.route("/subscribe/<symbol>")
+def subscribe(symbol):
+    subscribe_symbol(symbol)
+    return jsonify({"status": "ok", "symbol": symbol.upper()})
+
+
+def start_http():
+    app.run(host="127.0.0.1", port=5001, threaded=True)
+
+
+# =========================================================
+# MAIN
 # =========================================================
 if __name__ == "__main__":
-    print("=== ZERODHA EXCEL RTD (TERMINAL MODE) ===")
+    print("=== ZERODHA LIVE SNAPSHOT SERVER ===")
+    init()
+
+    threading.Thread(target=start_kite_ws, daemon=True).start()
+    threading.Thread(target=start_http, daemon=True).start()
+
     while True:
         time.sleep(1)
+
+
+# =RTD("clsZerodhaRTD","", "RELIANCE", "last_price")
+# =RTD("clsZerodhaRTD","", A2, "volume")
+# =RTD("clsZerodhaRTD","", "INFY", "bid_price")
