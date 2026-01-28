@@ -6,7 +6,7 @@ Option Explicit
 
 Public Const SNAPSHOT_URL As String = "http://127.0.0.1:5001/snapshot"
 Public Const SUBSCRIBE_URL As String = "http://127.0.0.1:5001/subscribe/"
-Public Const REFRESH_SECONDS As Double = 3   ' <<< 3 seconds
+Public Const REFRESH_SECONDS As Double = 1   ' <<< 3 seconds
 
 Private NextRun As Date
 Private IsRunning As Boolean
