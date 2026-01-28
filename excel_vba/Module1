@@ -3,48 +3,82 @@ Option Explicit
 ' =========================
 ' CONFIG
 ' =========================
+
 Public Const SNAPSHOT_URL As String = "http://127.0.0.1:5001/snapshot"
 Public Const SUBSCRIBE_URL As String = "http://127.0.0.1:5001/subscribe/"
-Public Const REFRESH_SECONDS As Double = 1
+Public Const REFRESH_SECONDS As Double = 3   ' <<< 3 seconds
 
 Private NextRun As Date
 Private IsRunning As Boolean
-Private SubscribedSymbols As Object   ' Dictionary
+Private SubscribedSymbols As Object
+Private ProcName As String
 
 ' =========================
 ' START LIVE UPDATE
 ' =========================
+
 Public Sub StartLiveFeed()
+
     If IsRunning Then Exit Sub
+
+    ProcName = "'" & ThisWorkbook.Name & "'!RefreshPrices"
 
     Set SubscribedSymbols = CreateObject("Scripting.Dictionary")
     IsRunning = True
-    Debug.Print "Live feed started"
+
+    Debug.Print "=============================="
+    Debug.Print "Live feed started:", Now
 
     RefreshPrices
+
 End Sub
 
 ' =========================
 ' STOP LIVE UPDATE
 ' =========================
+
 Public Sub StopLiveFeed()
+
     On Error Resume Next
+
     IsRunning = False
-    Application.OnTime NextRun, "RefreshPrices", , False
-    Debug.Print "Live feed stopped"
+
+    If NextRun <> 0 Then
+        Application.OnTime EarliestTime:=NextRun, _
+                           Procedure:=ProcName, _
+                           Schedule:=False
+    End If
+
+    Debug.Print "Live feed stopped:", Now
+
 End Sub
 
 ' =========================
-' MAIN REFRESH FUNCTION
+' MAIN LOOP
 ' =========================
 Public Sub RefreshPrices()
+
+    Application.ScreenUpdating = True
+    Application.Calculate
+
+    Debug.Print "RefreshPrices called:", Now
+
     If Not IsRunning Then Exit Sub
 
     Dim http As Object
     Set http = CreateObject("MSXML2.XMLHTTP")
 
-    http.Open "GET", SNAPSHOT_URL, False
+    Dim url As String
+    url = SNAPSHOT_URL & "?t=" & Format(Now, "hhmmss") & CLng(Rnd() * 10000)
+
+    http.Open "GET", url, False
+    http.setRequestHeader "Cache-Control", "no-cache"
+    http.setRequestHeader "Pragma", "no-cache"
+    http.setRequestHeader "Expires", "0"
     http.Send
+
+
+    Debug.Print "HTTP Status:", http.Status
 
     If http.Status <> 200 Then GoTo schedule_next
 
@@ -52,65 +86,111 @@ Public Sub RefreshPrices()
     json = http.responseText
 
     Dim ws As Worksheet
-    Set ws = ThisWorkbook.Sheets(1)   ' change if needed
+    Set ws = ThisWorkbook.Sheets(1)
 
     Dim lastRow As Long
     lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
 
-    Dim r As Long, symbol As String
+    Dim r As Long, symbol As String, block As String
+    Dim lp As Double
+
     For r = 2 To lastRow
-        symbol = Trim(ws.Cells(r, "A").Value)
 
-        If symbol <> "" Then
-            ' ---- subscribe once ----
-            If Not SubscribedSymbols.Exists(symbol) Then
-                SubscribeSymbol symbol
-                SubscribedSymbols(symbol) = True
-            End If
+    symbol = Trim(ws.Cells(r, "A").Value)
 
-            ' ---- write values ----
-            ws.Cells(r, "B").Value = GetValue(json, symbol, "open")
-            ws.Cells(r, "C").Value = GetValue(json, symbol, "high")
-            ws.Cells(r, "D").Value = GetValue(json, symbol, "low")
-            ws.Cells(r, "E").Value = GetValue(json, symbol, "close")
-            ws.Cells(r, "F").Value = GetValue(json, symbol, "last_price")
-            ws.Cells(r, "G").Value = GetValue(json, symbol, "volume")
-            ws.Cells(r, "H").Value = GetValue(json, symbol, "oi")
+    If symbol <> "" Then
+
+        ' ---- subscribe once ----
+        If Not SubscribedSymbols.Exists(symbol) Then
+            SubscribeSymbol symbol
+            SubscribedSymbols(symbol) = True
+            Debug.Print "Subscribed:", symbol
         End If
-    Next r
+
+        block = GetSymbolBlock(json, symbol)
+
+        If block <> "" Then
+
+            lp = GetField(block, "last_price")
+
+            Debug.Print symbol, "LTP:", lp
+
+            ws.Cells(r, "B").Value2 = GetField(block, "open")
+            ws.Cells(r, "C").Value2 = GetField(block, "high")
+            ws.Cells(r, "D").Value2 = GetField(block, "low")
+            ws.Cells(r, "E").Value2 = GetField(block, "close")
+            ws.Cells(r, "F").Value2 = lp
+            ws.Cells(r, "G").Value2 = GetField(block, "volume")
+            ws.Cells(r, "H").Value2 = GetField(block, "oi")
+
+        End If
+
+    End If
+
+Next r
+
 
 schedule_next:
-    NextRun = Now + TimeSerial(0, 0, REFRESH_SECONDS)
-    Application.OnTime NextRun, "RefreshPrices"
+
+    NextRun = Now + (REFRESH_SECONDS / 86400#)
+    Application.OnTime NextRun, ProcName
+
 End Sub
 
+
 ' =========================
-' SUBSCRIBE SYMBOL (ONCE)
+' SUBSCRIBE
 ' =========================
+
 Private Sub SubscribeSymbol(symbol As String)
+
     Dim http As Object
     Set http = CreateObject("MSXML2.XMLHTTP")
 
     http.Open "GET", SUBSCRIBE_URL & symbol, False
     http.Send
 
-    Debug.Print "Subscribed:", symbol
 End Sub
 
 ' =========================
-' FAST JSON VALUE PARSER
+' EXTRACT SYMBOL BLOCK
 ' =========================
-Private Function GetValue(json As String, sym As String, field As String) As Variant
+
+Private Function GetSymbolBlock(json As String, sym As String) As String
+
     Dim p1 As Long, p2 As Long
-    p1 = InStr(1, json, """" & sym & """", vbTextCompare)
+
+    p1 = InStr(1, json, """" & sym & """")
     If p1 = 0 Then Exit Function
 
-    p2 = InStr(p1, json, """" & field & """", vbTextCompare)
-    If p2 = 0 Then Exit Function
+    p1 = InStr(p1, json, "{")
+    p2 = InStr(p1, json, "}")
 
-    p2 = InStr(p2, json, ":")
-    GetValue = Replace(Split(Mid(json, p2 + 1), ",")(0), "}", "")
+    If p2 > p1 Then
+        GetSymbolBlock = Mid(json, p1 + 1, p2 - p1 - 1)
+    End If
+
 End Function
 
+' =========================
+' FIELD PARSER
+' =========================
+
+Private Function GetField(block As String, field As String) As Double
+
+    Dim p As Long
+    Dim raw As String
+
+    p = InStr(1, block, """" & field & """")
+    If p = 0 Then Exit Function
+
+    p = InStr(p, block, ":")
+
+    raw = Split(Mid(block, p + 1), ",")(0)
+    raw = Replace(raw, """", "")
+
+    GetField = Val(raw)
+
+End Function
 
 
