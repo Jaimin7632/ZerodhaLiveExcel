@@ -41,6 +41,7 @@ def on_ticks(ws, ticks):
             LIVE_DATA[symbol] = {
                 "last_price": tick.get("last_price"),
                 "volume": tick.get("volume_traded"),
+                "vwap": tick.get("average_traded_price"),
                 "oi": tick.get("oi"),
                 "open": tick.get("ohlc", {}).get("open"),
                 "high": tick.get("ohlc", {}).get("high"),
