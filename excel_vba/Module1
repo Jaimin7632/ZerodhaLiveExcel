@@ -122,6 +122,7 @@ Public Sub RefreshPrices()
             ws.Cells(r, "F").Value2 = lp
             ws.Cells(r, "G").Value2 = GetField(block, "volume")
             ws.Cells(r, "H").Value2 = GetField(block, "oi")
+            ws.Cells(r, "I").Value2 = GetField(block, "vwap")
 
         End If
 
