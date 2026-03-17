@@ -3,45 +3,64 @@ Option Explicit
 ' =========================
 ' CONFIG
 ' =========================
-
 Public Const SNAPSHOT_URL As String = "http://127.0.0.1:5001/snapshot"
 Public Const SUBSCRIBE_URL As String = "http://127.0.0.1:5001/subscribe/"
-Public Const REFRESH_SECONDS As Double = 1   ' <<< 3 seconds
+Public Const REFRESH_SECONDS As Double = 1
+
+' Change this to your formula range if needed
+Private Const FIRST_DATA_ROW As Long = 2
+Private Const SYMBOL_COL As String = "A"
+Private Const OUTPUT_FIRST_COL As String = "B"
+Private Const OUTPUT_LAST_COL As String = "I"
 
 Private NextRun As Date
 Private IsRunning As Boolean
+Private IsBusy As Boolean
 Private SubscribedSymbols As Object
 Private ProcName As String
 
 ' =========================
 ' START LIVE UPDATE
 ' =========================
-
 Public Sub StartLiveFeed()
+
+    On Error GoTo EH
 
     If IsRunning Then Exit Sub
 
+    Randomize
+
     ProcName = "'" & ThisWorkbook.Name & "'!RefreshPrices"
 
-    Set SubscribedSymbols = CreateObject("Scripting.Dictionary")
+    If SubscribedSymbols Is Nothing Then
+        Set SubscribedSymbols = CreateObject("Scripting.Dictionary")
+        SubscribedSymbols.CompareMode = vbTextCompare
+    Else
+        SubscribedSymbols.RemoveAll
+    End If
+
     IsRunning = True
+    IsBusy = False
 
     Debug.Print "=============================="
     Debug.Print "Live feed started:", Now
 
     RefreshPrices
+    Exit Sub
 
+EH:
+    Debug.Print "StartLiveFeed ERROR:", Err.Number, Err.Description
 End Sub
 
 ' =========================
 ' STOP LIVE UPDATE
 ' =========================
-
 Public Sub StopLiveFeed()
 
     On Error Resume Next
 
     IsRunning = False
+    IsBusy = False
 
     If NextRun <> 0 Then
         Application.OnTime EarliestTime:=NextRun, _
@@ -50,7 +69,6 @@ Public Sub StopLiveFeed()
     End If
 
     Debug.Print "Live feed stopped:", Now
-
 End Sub
 
 ' =========================
@@ -58,18 +76,42 @@ End Sub
 ' =========================
 Public Sub RefreshPrices()
 
-    Application.ScreenUpdating = True
-    Application.Calculate
+    Dim ws As Worksheet
+    Dim http As Object
+    Dim url As String
+    Dim json As String
+    Dim lastRow As Long
+    Dim oldCalc As XlCalculation
+    Dim symArr As Variant
+    Dim outArr() As Variant
+    Dim r As Long
+    Dim symbol As String
+    Dim block As String
 
-    Debug.Print "RefreshPrices called:", Now
+    On Error GoTo EH
 
     If Not IsRunning Then Exit Sub
 
-    Dim http As Object
+    ' Prevent overlap
+    If IsBusy Then GoTo ScheduleNext
+    IsBusy = True
+
+    Set ws = ThisWorkbook.Sheets(1)
+    lastRow = ws.Cells(ws.Rows.Count, SYMBOL_COL).End(xlUp).Row
+
+    If lastRow < FIRST_DATA_ROW Then GoTo SafeExit
+
+    oldCalc = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Debug.Print "RefreshPrices called:", Now
+
+    ' ---- fetch snapshot ----
     Set http = CreateObject("MSXML2.XMLHTTP")
 
-    Dim url As String
-    url = SNAPSHOT_URL & "?t=" & Format(Now, "hhmmss") & CLng(Rnd() * 10000)
+    url = SNAPSHOT_URL & "?t=" & Format$(Now, "yyyymmddhhnnss") & CStr(Int(Rnd() * 100000))
 
     http.Open "GET", url, False
     http.setRequestHeader "Cache-Control", "no-cache"
@@ -77,121 +119,178 @@ Public Sub RefreshPrices()
     http.setRequestHeader "Expires", "0"
     http.Send
 
-
     Debug.Print "HTTP Status:", http.Status
 
-    If http.Status <> 200 Then GoTo schedule_next
+    If http.Status <> 200 Then GoTo SafeExit
 
-    Dim json As String
     json = http.responseText
+    If Len(json) = 0 Then GoTo SafeExit
 
-    Dim ws As Worksheet
-    Set ws = ThisWorkbook.Sheets(1)
+    ' ---- read symbols once ----
+    symArr = ws.Range(SYMBOL_COL & FIRST_DATA_ROW & ":" & SYMBOL_COL & lastRow).Value2
+    ReDim outArr(1 To UBound(symArr, 1), 1 To 8)
 
-    Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    ' ---- process in memory ----
+    For r = 1 To UBound(symArr, 1)
 
-    Dim r As Long, symbol As String, block As String
-    Dim lp As Double
+        symbol = Trim$(CStr(symArr(r, 1)))
 
-    For r = 2 To lastRow
+        If Len(symbol) > 0 Then
 
-    symbol = Trim(ws.Cells(r, "A").Value)
+            ' subscribe only once
+            If Not SubscribedSymbols.Exists(symbol) Then
+                SubscribeSymbol symbol
+                SubscribedSymbols(symbol) = True
+                Debug.Print "Subscribed:", symbol
+            End If
 
-    If symbol <> "" Then
+            block = GetSymbolBlock(json, symbol)
 
-        ' ---- subscribe once ----
-        If Not SubscribedSymbols.Exists(symbol) Then
-            SubscribeSymbol symbol
-            SubscribedSymbols(symbol) = True
-            Debug.Print "Subscribed:", symbol
+            If Len(block) > 0 Then
+                outArr(r, 1) = GetField(block, "open")
+                outArr(r, 2) = GetField(block, "high")
+                outArr(r, 3) = GetField(block, "low")
+                outArr(r, 4) = GetField(block, "close")
+                outArr(r, 5) = GetField(block, "last_price")
+                outArr(r, 6) = GetField(block, "volume")
+                outArr(r, 7) = GetField(block, "oi")
+                outArr(r, 8) = GetField(block, "vwap")
+
+                Debug.Print symbol, "LTP:", outArr(r, 5)
+            End If
         End If
+    Next r
 
-        block = GetSymbolBlock(json, symbol)
+    ' ---- write once ----
+    ws.Range(OUTPUT_FIRST_COL & FIRST_DATA_ROW & ":" & OUTPUT_LAST_COL & lastRow).Value2 = outArr
 
-        If block <> "" Then
+    ' ---- recalc only used range on this sheet
+    ' Better than full workbook calculate
+    ws.UsedRange.Calculate
 
-            lp = GetField(block, "last_price")
+SafeExit:
+    Application.Calculation = oldCalc
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Application.StatusBar = False
 
-            Debug.Print symbol, "LTP:", lp
+    IsBusy = False
 
-            ws.Cells(r, "B").Value2 = GetField(block, "open")
-            ws.Cells(r, "C").Value2 = GetField(block, "high")
-            ws.Cells(r, "D").Value2 = GetField(block, "low")
-            ws.Cells(r, "E").Value2 = GetField(block, "close")
-            ws.Cells(r, "F").Value2 = lp
-            ws.Cells(r, "G").Value2 = GetField(block, "volume")
-            ws.Cells(r, "H").Value2 = GetField(block, "oi")
-            ws.Cells(r, "I").Value2 = GetField(block, "vwap")
-
-        End If
-
+ScheduleNext:
+    If IsRunning Then
+        NextRun = Now + (REFRESH_SECONDS / 86400#)
+        Application.OnTime EarliestTime:=NextRun, Procedure:=ProcName, Schedule:=True
     End If
 
-Next r
+    Exit Sub
 
-
-schedule_next:
-
-    NextRun = Now + (REFRESH_SECONDS / 86400#)
-    Application.OnTime NextRun, ProcName
-
+EH:
+    Debug.Print "RefreshPrices ERROR:", Err.Number, Err.Description
+    Resume SafeExit
 End Sub
-
 
 ' =========================
 ' SUBSCRIBE
 ' =========================
-
-Private Sub SubscribeSymbol(symbol As String)
+Private Sub SubscribeSymbol(ByVal symbol As String)
 
     Dim http As Object
-    Set http = CreateObject("MSXML2.XMLHTTP")
 
+    On Error GoTo EH
+
+    Set http = CreateObject("MSXML2.XMLHTTP")
     http.Open "GET", SUBSCRIBE_URL & symbol, False
     http.Send
 
+    Exit Sub
+
+EH:
+    Debug.Print "Subscribe ERROR:", symbol, Err.Number, Err.Description
 End Sub
 
 ' =========================
 ' EXTRACT SYMBOL BLOCK
+' Robust version:
+' finds "SYMBOL": { ... }
+' and returns only inner content of braces
 ' =========================
+Private Function GetSymbolBlock(ByVal json As String, ByVal sym As String) As String
 
-Private Function GetSymbolBlock(json As String, sym As String) As String
+    Dim keyPos As Long
+    Dim braceStart As Long
+    Dim i As Long
+    Dim level As Long
+    Dim ch As String
 
-    Dim p1 As Long, p2 As Long
+    keyPos = InStr(1, json, """" & sym & """", vbTextCompare)
+    If keyPos = 0 Then Exit Function
 
-    p1 = InStr(1, json, """" & sym & """")
-    If p1 = 0 Then Exit Function
+    braceStart = InStr(keyPos, json, "{")
+    If braceStart = 0 Then Exit Function
 
-    p1 = InStr(p1, json, "{")
-    p2 = InStr(p1, json, "}")
+    level = 0
 
-    If p2 > p1 Then
-        GetSymbolBlock = Mid(json, p1 + 1, p2 - p1 - 1)
-    End If
+    For i = braceStart To Len(json)
+        ch = Mid$(json, i, 1)
 
+        If ch = "{" Then
+            level = level + 1
+        ElseIf ch = "}" Then
+            level = level - 1
+            If level = 0 Then
+                GetSymbolBlock = Mid$(json, braceStart + 1, i - braceStart - 1)
+                Exit Function
+            End If
+        End If
+    Next i
 End Function
 
 ' =========================
-' FIELD PARSER
+' GET NUMERIC FIELD FROM BLOCK
+' Handles:
+' "open":123
+' "open":123.45
+' "open":"123.45"
 ' =========================
-
-Private Function GetField(block As String, field As String) As Double
+Private Function GetField(ByVal block As String, ByVal field As String) As Double
 
     Dim p As Long
+    Dim colonPos As Long
+    Dim i As Long
     Dim raw As String
+    Dim ch As String
 
-    p = InStr(1, block, """" & field & """")
+    p = InStr(1, block, """" & field & """", vbTextCompare)
     If p = 0 Then Exit Function
 
-    p = InStr(p, block, ":")
+    colonPos = InStr(p, block, ":")
+    If colonPos = 0 Then Exit Function
 
-    raw = Split(Mid(block, p + 1), ",")(0)
-    raw = Replace(raw, """", "")
+    raw = ""
 
-    GetField = Val(raw)
+    For i = colonPos + 1 To Len(block)
+        ch = Mid$(block, i, 1)
 
+        Select Case ch
+            Case " ", vbTab, vbCr, vbLf, """"
+                ' skip
+            Case ",", "}"
+                Exit For
+            Case Else
+                raw = raw & ch
+        End Select
+    Next i
+
+    raw = Trim$(raw)
+
+    If Len(raw) = 0 Then
+        GetField = 0
+    ElseIf LCase$(raw) = "null" Then
+        GetField = 0
+    ElseIf IsNumeric(raw) Then
+        GetField = CDbl(raw)
+    Else
+        GetField = Val(raw)
+    End If
 End Function
-
 
